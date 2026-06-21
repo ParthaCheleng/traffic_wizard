@@ -6,7 +6,7 @@ import 'maplibre-gl/dist/maplibre-gl.css';
 import { motion, AnimatePresence } from 'framer-motion';
 import { io, Socket } from 'socket.io-client';
 import { Card, CardContent } from './ui/card';
-import { AlertTriangle, Search, X, Navigation2, Utensils, Bed, Camera, Building, Train, Cross, CreditCard, User, LocateFixed, CornerUpRight, Grid3X3, LogOut, ShieldAlert } from 'lucide-react';
+import { AlertTriangle, Search, X, Navigation2, Utensils, Bed, Camera, Building, Train, Cross, CreditCard, User, LocateFixed, CornerUpRight, Grid3X3, LogOut, ShieldAlert, Compass } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 import { AuthOverlay } from './AuthOverlay';
 import { CopilotPanel } from './CopilotPanel';
@@ -41,6 +41,20 @@ const MOCK_CURRENT_LOCATION = {
   latitude: 17.3850
 };
 
+const HYDERABAD_BOUNDS = {
+  minLng: 78.3,
+  maxLng: 78.6,
+  minLat: 17.3,
+  maxLat: 17.5
+};
+
+const isWithinHyderabad = (lng: number, lat: number) => {
+  return lng >= HYDERABAD_BOUNDS.minLng && 
+         lng <= HYDERABAD_BOUNDS.maxLng && 
+         lat >= HYDERABAD_BOUNDS.minLat && 
+         lat <= HYDERABAD_BOUNDS.maxLat;
+};
+
 const QUICK_FILTERS = [
   { id: 'restaurants', label: 'Restaurants', icon: Utensils, query: 'node["amenity"="restaurant"]' },
   { id: 'hotels', label: 'Hotels', icon: Bed, query: 'node["tourism"="hotel"]' },
@@ -61,6 +75,7 @@ export default function MapDashboard() {
   
   // Geolocation state
   const [currentLocation, setCurrentLocation] = useState(MOCK_CURRENT_LOCATION);
+  const [isSimulatedLocation, setIsSimulatedLocation] = useState(false);
 
   // Avoidance Multiplier state for routing detour sensitivity
   const [avoidanceMultiplier, setAvoidanceMultiplier] = useState(1.25);
@@ -102,10 +117,19 @@ export default function MapDashboard() {
       navigator.geolocation.getCurrentPosition(
         (position) => {
           const coords = { longitude: position.coords.longitude, latitude: position.coords.latitude };
-          setCurrentLocation(coords);
-          
-          if (mapRef.current) {
-            mapRef.current.flyTo({ center: [coords.longitude, coords.latitude], zoom: 14, duration: 1500 });
+          if (isWithinHyderabad(coords.longitude, coords.latitude)) {
+            setCurrentLocation(coords);
+            setIsSimulatedLocation(false);
+            if (mapRef.current) {
+              mapRef.current.flyTo({ center: [coords.longitude, coords.latitude], zoom: 14, duration: 1500 });
+            }
+          } else {
+            console.warn("User location is outside Hyderabad bounds. Keeping simulated location.");
+            setIsSimulatedLocation(true);
+            setCurrentLocation(MOCK_CURRENT_LOCATION);
+            if (mapRef.current) {
+              mapRef.current.flyTo({ center: [MOCK_CURRENT_LOCATION.longitude, MOCK_CURRENT_LOCATION.latitude], zoom: 14, duration: 1500 });
+            }
           }
         },
         (error) => {
@@ -136,17 +160,35 @@ export default function MapDashboard() {
       watchId = navigator.geolocation.watchPosition(
         (position) => {
           const coords = { longitude: position.coords.longitude, latitude: position.coords.latitude };
-          setCurrentLocation(coords);
-          
-          if (mapRef.current && !hasCenteredRef.current) {
-            hasCenteredRef.current = true;
-            const map = mapRef.current;
-            if (!map.loaded()) {
-              map.once('load', () => {
+          if (isWithinHyderabad(coords.longitude, coords.latitude)) {
+            setCurrentLocation(coords);
+            setIsSimulatedLocation(false);
+            
+            if (mapRef.current && !hasCenteredRef.current) {
+              hasCenteredRef.current = true;
+              const map = mapRef.current;
+              if (!map.loaded()) {
+                map.once('load', () => {
+                  map.flyTo({ center: [coords.longitude, coords.latitude], zoom: 14, duration: 2000 });
+                });
+              } else {
                 map.flyTo({ center: [coords.longitude, coords.latitude], zoom: 14, duration: 2000 });
-              });
-            } else {
-              map.flyTo({ center: [coords.longitude, coords.latitude], zoom: 14, duration: 2000 });
+              }
+            }
+          } else {
+            console.warn("User location is outside Hyderabad bounds. Using simulated location.");
+            setIsSimulatedLocation(true);
+            
+            if (mapRef.current && !hasCenteredRef.current) {
+              hasCenteredRef.current = true;
+              const map = mapRef.current;
+              if (!map.loaded()) {
+                map.once('load', () => {
+                  map.flyTo({ center: [MOCK_CURRENT_LOCATION.longitude, MOCK_CURRENT_LOCATION.latitude], zoom: 14, duration: 2000 });
+                });
+              } else {
+                map.flyTo({ center: [MOCK_CURRENT_LOCATION.longitude, MOCK_CURRENT_LOCATION.latitude], zoom: 14, duration: 2000 });
+              }
             }
           }
         },
@@ -830,6 +872,13 @@ export default function MapDashboard() {
             )}
           </AnimatePresence>
         </div>
+
+        {isSimulatedLocation && (
+          <div className="flex items-center gap-2 px-4 py-2.5 rounded-full bg-zinc-950/90 border border-amber-500/40 text-amber-400 text-xs font-semibold shadow-lg backdrop-blur-md animate-pulse">
+            <Compass className="w-4.5 h-4.5 text-amber-500" />
+            <span>Simulated Hyderabad Location Active</span>
+          </div>
+        )}
 
         {/* Traffic Hotspots Dropdown */}
         <div className="relative w-full md:w-auto">
