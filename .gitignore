@@ -1,0 +1,29 @@
+# Dependency directories
+node_modules/
+**/node_modules/
+
+# Build outputs
+.next/
+**/.next/
+dist/
+**/dist/
+*.tsbuildinfo
+**/tsconfig.tsbuildinfo
+out/
+build/
+
+# Local environment files
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+*.env
+**/*.env
+**/*.env.local
+
+# Logs and system files
+*.log
+**/*.log
+.DS_Store
+Thumbs.db
