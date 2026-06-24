@@ -7,9 +7,14 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { io, Socket } from 'socket.io-client';
 import { Card, CardContent } from './ui/card';
 import { AlertTriangle, Search, X, Navigation2, Utensils, Bed, Camera, Building, Train, Cross, CreditCard, User, LocateFixed, CornerUpRight, Grid3X3, LogOut, ShieldAlert, Compass } from 'lucide-react';
-import { supabase } from '../lib/supabase';
-import { AuthOverlay } from './AuthOverlay';
+
+import { useDummyTraffic } from '../hooks/useDummyTraffic';
 import { CopilotPanel } from './CopilotPanel';
+import { point, polygon } from '@turf/helpers';
+import circle from '@turf/circle';
+import booleanPointInPolygon from '@turf/boolean-point-in-polygon';
+import distance from '@turf/distance';
+import { useAuth } from '@/providers/AuthProvider';
 
 // EMERGENCY_INCIDENTS mappings matching backend preemption priorities
 const EMERGENCY_INCIDENTS: Record<string, Array<{ incident: string; level: number }>> = {
@@ -41,19 +46,7 @@ const MOCK_CURRENT_LOCATION = {
   latitude: 17.3850
 };
 
-const HYDERABAD_BOUNDS = {
-  minLng: 78.3,
-  maxLng: 78.6,
-  minLat: 17.3,
-  maxLat: 17.5
-};
-
-const isWithinHyderabad = (lng: number, lat: number) => {
-  return lng >= HYDERABAD_BOUNDS.minLng && 
-         lng <= HYDERABAD_BOUNDS.maxLng && 
-         lat >= HYDERABAD_BOUNDS.minLat && 
-         lat <= HYDERABAD_BOUNDS.maxLat;
-};
+// Fallback mock location
 
 const QUICK_FILTERS = [
   { id: 'restaurants', label: 'Restaurants', icon: Utensils, query: 'node["amenity"="restaurant"]' },
@@ -72,10 +65,12 @@ export default function MapDashboard() {
   const [mapLoaded, setMapLoaded] = useState(false);
   const hasCenteredRef = useRef(false);
   const copilotMarkerRef = useRef<maplibregl.Marker | null>(null);
+  const { session } = useAuth();
   
   // Geolocation state
   const [currentLocation, setCurrentLocation] = useState(MOCK_CURRENT_LOCATION);
-  const [isSimulatedLocation, setIsSimulatedLocation] = useState(false);
+  const [isSimulatedLocation, setIsSimulatedLocation] = useState<boolean>(false);
+
 
   // Avoidance Multiplier state for routing detour sensitivity
   const [avoidanceMultiplier, setAvoidanceMultiplier] = useState(1.25);
@@ -84,11 +79,11 @@ export default function MapDashboard() {
   const [emergencyIncident, setEmergencyIncident] = useState('Cardiac Arrest');
 
   const [trafficData, setTrafficData] = useState<any>(null);
+  const { dummyFeatures: dummyTrafficData, rawPoints: dummyRawPoints } = useDummyTraffic(trafficData, mapLoaded);
+  const [notificationFeed, setNotificationFeed] = useState<Array<{id: string, title: string, message: string}>>([]);
   const [route, setRoute] = useState<any>(null);
   const [isNavigating, setIsNavigating] = useState(false);
   const [socket, setSocket] = useState<Socket | null>(null);
-  const [session, setSession] = useState<any>(null);
-  const [showAuthModal, setShowAuthModal] = useState(false);
   const [liveUsers, setLiveUsers] = useState<any[]>([]);
 
   // Search States
@@ -117,19 +112,10 @@ export default function MapDashboard() {
       navigator.geolocation.getCurrentPosition(
         (position) => {
           const coords = { longitude: position.coords.longitude, latitude: position.coords.latitude };
-          if (isWithinHyderabad(coords.longitude, coords.latitude)) {
-            setCurrentLocation(coords);
-            setIsSimulatedLocation(false);
-            if (mapRef.current) {
-              mapRef.current.flyTo({ center: [coords.longitude, coords.latitude], zoom: 14, duration: 1500 });
-            }
-          } else {
-            console.warn("User location is outside Hyderabad bounds. Keeping simulated location.");
-            setIsSimulatedLocation(true);
-            setCurrentLocation(MOCK_CURRENT_LOCATION);
-            if (mapRef.current) {
-              mapRef.current.flyTo({ center: [MOCK_CURRENT_LOCATION.longitude, MOCK_CURRENT_LOCATION.latitude], zoom: 14, duration: 1500 });
-            }
+          setCurrentLocation(coords);
+          setIsSimulatedLocation(false);
+          if (mapRef.current) {
+            mapRef.current.flyTo({ center: [coords.longitude, coords.latitude], zoom: 14, duration: 1500 });
           }
         },
         (error) => {
@@ -160,35 +146,18 @@ export default function MapDashboard() {
       watchId = navigator.geolocation.watchPosition(
         (position) => {
           const coords = { longitude: position.coords.longitude, latitude: position.coords.latitude };
-          if (isWithinHyderabad(coords.longitude, coords.latitude)) {
-            setCurrentLocation(coords);
-            setIsSimulatedLocation(false);
-            
-            if (mapRef.current && !hasCenteredRef.current) {
-              hasCenteredRef.current = true;
-              const map = mapRef.current;
-              if (!map.loaded()) {
-                map.once('load', () => {
-                  map.flyTo({ center: [coords.longitude, coords.latitude], zoom: 14, duration: 2000 });
-                });
-              } else {
+          setCurrentLocation(coords);
+          setIsSimulatedLocation(false);
+          
+          if (mapRef.current && !hasCenteredRef.current) {
+            hasCenteredRef.current = true;
+            const map = mapRef.current;
+            if (!map.loaded()) {
+              map.once('load', () => {
                 map.flyTo({ center: [coords.longitude, coords.latitude], zoom: 14, duration: 2000 });
-              }
-            }
-          } else {
-            console.warn("User location is outside Hyderabad bounds. Using simulated location.");
-            setIsSimulatedLocation(true);
-            
-            if (mapRef.current && !hasCenteredRef.current) {
-              hasCenteredRef.current = true;
-              const map = mapRef.current;
-              if (!map.loaded()) {
-                map.once('load', () => {
-                  map.flyTo({ center: [MOCK_CURRENT_LOCATION.longitude, MOCK_CURRENT_LOCATION.latitude], zoom: 14, duration: 2000 });
-                });
-              } else {
-                map.flyTo({ center: [MOCK_CURRENT_LOCATION.longitude, MOCK_CURRENT_LOCATION.latitude], zoom: 14, duration: 2000 });
-              }
+              });
+            } else {
+              map.flyTo({ center: [coords.longitude, coords.latitude], zoom: 14, duration: 2000 });
             }
           }
         },
@@ -429,6 +398,24 @@ export default function MapDashboard() {
           ]
         }
       });
+
+      // Dummy Traffic source and layer
+      map.addSource('dummy-traffic', {
+        type: 'geojson',
+        data: { type: 'FeatureCollection', features: [] }
+      });
+      map.addLayer({
+        id: 'dummy-traffic-layer',
+        type: 'circle',
+        source: 'dummy-traffic',
+        paint: {
+          'circle-radius': 3.5,
+          'circle-color': '#10B981', // Emerald green
+          'circle-opacity': 0.8,
+          'circle-stroke-width': 1,
+          'circle-stroke-color': '#064E3B'
+        }
+      });
     });
 
     return () => {
@@ -441,37 +428,16 @@ export default function MapDashboard() {
     };
   }, []);
 
-  // Handle Supabase Auth Session
+  // Handle WebSockets
   useEffect(() => {
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      setSession(session);
-      if (!session) {
-        setShowAuthModal(true);
-      }
-    });
-
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
-      setSession(session);
-      if (session) {
-        setShowAuthModal(false);
-      } else {
-        setShowAuthModal(true);
-      }
-    });
-
-    return () => subscription.unsubscribe();
-  }, []);
-
-  // Handle WebSockets bound to User Session
-  useEffect(() => {
-    if (!session) {
-      setSocket(null);
-      return;
-    }
-
-    const token = session.access_token;
     const newSocket = io(SOCKET_URL, {
-      auth: { token }
+      auth: { 
+        token: session?.access_token,
+        role: 'emergency',
+        emergencyType: 'Ambulance',
+        sirenActive: false,
+        medicalPriority: 'A'
+      }
     });
 
     newSocket.on('connect', () => {
@@ -494,7 +460,44 @@ export default function MapDashboard() {
     return () => {
       newSocket.disconnect();
     };
-  }, [session]);
+  }, []);
+
+
+  // Pulse animation for dummy dots
+  useEffect(() => {
+    if (!mapLoaded || !mapRef.current) return;
+    
+    let frame = 0;
+    let animationId: number;
+    const map = mapRef.current;
+    
+    const animatePulse = () => {
+      frame++;
+      // Sine wave between 2 and 5 for a breathing effect (slower rate)
+      const radius = 3.5 + Math.sin(frame / 45) * 1.5; 
+      
+      if (map.getLayer('dummy-traffic-layer')) {
+        map.setPaintProperty('dummy-traffic-layer', 'circle-radius', radius);
+      }
+      
+      animationId = requestAnimationFrame(animatePulse);
+    };
+    
+    animatePulse();
+    return () => cancelAnimationFrame(animationId);
+  }, [mapLoaded]);
+
+  // Update dummy traffic on map
+  useEffect(() => {
+    if (!mapLoaded || !mapRef.current || !dummyTrafficData) return;
+    
+    const map = mapRef.current;
+    const source = map.getSource('dummy-traffic') as maplibregl.GeoJSONSource;
+    
+    if (source && dummyTrafficData.features) {
+      source.setData(dummyTrafficData);
+    }
+  }, [dummyTrafficData, mapLoaded]);
 
   // Update live users on map
   useEffect(() => {
@@ -504,7 +507,7 @@ export default function MapDashboard() {
     const source = map.getSource('live-users') as maplibregl.GeoJSONSource;
     
     if (source) {
-      const currentUserId = session?.user?.id;
+      const currentUserId = socket?.id;
       
       const userFeatures = liveUsers
         .filter((u: any) => u.role !== 'admin' && u.id !== currentUserId && u.lng !== undefined && u.lat !== undefined)
@@ -528,7 +531,7 @@ export default function MapDashboard() {
         features: userFeatures
       });
     }
-  }, [liveUsers, mapLoaded, session]);
+  }, [liveUsers, mapLoaded, socket]);
 
   // Update traffic on map
   useEffect(() => {
@@ -746,9 +749,8 @@ export default function MapDashboard() {
     }
   };
 
-  const userProfile = session?.user?.user_metadata || {};
-  const userRole = userProfile.role || 'general';
-  const userVehicleType = userProfile.vehicle_type || '';
+  const userRole: string = 'emergency';
+  const userVehicleType: string = 'Ambulance';
 
   // Auto-select first incident for responder's vehicle type on metadata load
   useEffect(() => {
@@ -759,6 +761,63 @@ export default function MapDashboard() {
       }
     }
   }, [userVehicleType]);
+
+  const dispatchEvacuationWaves = (hotspot: any) => {
+    if (!hotspot || !hotspot.properties || !hotspot.properties.epicenter) return;
+    const [lng, lat] = hotspot.properties.epicenter;
+    const radius = (hotspot.properties.radiusKm || 1.5) * 4; // Expanded radius specifically to hit more dummies for visual effect
+    
+    const hotspotPoly = circle([lng, lat], radius, { units: 'kilometers' });
+    
+    const affectedDummies = dummyRawPoints.filter((pt: any) => {
+      const ptFeature = point([pt.lng, pt.lat]);
+      return booleanPointInPolygon(ptFeature, hotspotPoly);
+    });
+
+    if (affectedDummies.length === 0) return;
+
+    let title = "ℹ️ TRAFFIC NOTICE";
+    let message = "Standard Patient Transport passing through.";
+    const severity = EMERGENCY_INCIDENTS[userVehicleType || 'Ambulance']?.find(i => i.incident === emergencyIncident)?.level || 4;
+    
+    if (severity === 1) { title = "🚨 CRITICAL ALERT"; message = "Urgent Medical Intervention required! Kindly clear the way immediately."; }
+    else if (severity === 2) { title = "🚨 HIGH PRIORITY ALERT"; message = "Time-Sensitive Emergency approaching. Please make room."; }
+    else if (severity === 3) { title = "⚠️ EMERGENCY ALERT"; message = "Accident response team approaching. Move to the side safely."; }
+
+    const notifId = Date.now().toString();
+    setNotificationFeed(prev => [...prev, { id: notifId, title, message }]);
+    setTimeout(() => {
+      setNotificationFeed(prev => prev.filter(n => n.id !== notifId));
+    }, 6000);
+
+    const batch1 = affectedDummies.filter((d: any) => ['Heavy Commercial', 'Truck', 'Bus'].includes(d.vehicleType));
+    const batch2 = affectedDummies.filter((d: any) => ['Car', 'SUV'].includes(d.vehicleType));
+    const batch3 = affectedDummies.filter((d: any) => ['Two-Wheeler', 'Bike'].includes(d.vehicleType));
+
+    const spawnBells = (batch: any[]) => {
+      batch.forEach(d => {
+        const el = document.createElement('div');
+        el.className = 'select-none pointer-events-none z-[100]';
+        
+        const inner = document.createElement('div');
+        inner.className = 'animate-bounce';
+        inner.style.fontSize = '28px';
+        inner.style.filter = 'drop-shadow(0px 4px 6px rgba(0,0,0,0.5))';
+        inner.innerHTML = '🔔';
+        
+        el.appendChild(inner);
+
+        const marker = new maplibregl.Marker({ element: el })
+          .setLngLat([d.lng, d.lat])
+          .addTo(mapRef.current!);
+        setTimeout(() => marker.remove(), 4000);
+      });
+    };
+
+    if (batch1.length > 0) setTimeout(() => spawnBells(batch1), 0);
+    if (batch2.length > 0) setTimeout(() => spawnBells(batch2), 1500);
+    if (batch3.length > 0) setTimeout(() => spawnBells(batch3), 3000);
+  };
 
   const triggerManualSiren = () => {
     if (!socket || !currentLocation) {
@@ -776,9 +835,41 @@ export default function MapDashboard() {
       severity: severity,
       location: [currentLocation.longitude, currentLocation.latitude]
     });
+    
+    // Execute spatial proximity loop
+    if (trafficData && trafficData.features) {
+       const userPt = point([currentLocation.longitude, currentLocation.latitude]);
+       let targetHotspot = trafficData.features.find((f: any) => {
+          const hPoly = circle(f.properties.epicenter, f.properties.radiusKm || 1.5, { units: 'kilometers' });
+          return booleanPointInPolygon(userPt, hPoly);
+       });
+       
+       // Fallback to nearest hotspot if not inside one, so the bells UI can be tested anywhere
+       if (!targetHotspot && trafficData.features.length > 0) {
+         targetHotspot = trafficData.features.reduce((nearest: any, current: any) => {
+           const d1 = distance(userPt, point(current.properties.epicenter), { units: 'kilometers' });
+           const d2 = distance(userPt, point(nearest.properties.epicenter), { units: 'kilometers' });
+           return d1 < d2 ? current : nearest;
+         });
+       }
 
-    alert(`🚨 Siren Triggered: ${emergencyIncident} (Severity Level ${severity}). Preemption alert sent to n8n.`);
+       if (targetHotspot) {
+         dispatchEvacuationWaves(targetHotspot);
+       }
+    }
   };
+
+  // Passive Trigger Observer
+  useEffect(() => {
+    if (!trafficData || !trafficData.features || !currentLocation || !mapLoaded) return;
+    const userPt = point([currentLocation.longitude, currentLocation.latitude]);
+    const currentHotspot = trafficData.features.find((f: any) => {
+      const hPoly = circle(f.properties.epicenter, f.properties.radiusKm || 1.5, { units: 'kilometers' });
+      return booleanPointInPolygon(userPt, hPoly);
+    });
+    // For passive detection, we don't want to endlessly spam the dispatch if they sit in the hotspot.
+    // In a full implementation we'd track the "last dispatched hotspot ID". For this phase, we just attach it.
+  }, [currentLocation, trafficData, mapLoaded]);
 
   const sendAdminDispatch = async (targetUserId?: string, hotspotId?: string) => {
     try {
@@ -983,11 +1074,6 @@ export default function MapDashboard() {
           <Grid3X3 className="w-5 h-5 text-gray-600" />
         </button>
         <div 
-          onClick={() => {
-            if (window.confirm('Do you want to sign out?')) {
-              supabase.auth.signOut();
-            }
-          }}
           className="w-10 h-10 rounded-full bg-blue-100 border-2 border-white shadow-md flex items-center justify-center overflow-hidden cursor-pointer hover:bg-blue-200 transition-all active:scale-95"
           title="Click to Sign Out"
         >
@@ -1007,6 +1093,22 @@ export default function MapDashboard() {
             <Card className="bg-zinc-950/90 backdrop-blur-xl border border-red-900/30 shadow-2xl text-zinc-100 relative overflow-hidden">
               <div className="absolute top-0 left-0 right-0 h-0.5 bg-gradient-to-r from-red-500 to-amber-500 animate-pulse"></div>
               <CardContent className="p-4 flex flex-col gap-3">
+                <div className="flex flex-col gap-2 bg-zinc-900/50 p-2.5 rounded-lg border border-zinc-800/50">
+                  <span className="text-[10px] uppercase font-bold text-zinc-500 tracking-wider">Map Legend</span>
+                  <div className="flex items-center gap-2 text-xs text-zinc-300 mt-1">
+                    <span className="w-2.5 h-2.5 rounded-full bg-blue-500 shadow-[0_0_8px_rgba(59,130,246,0.8)] border border-white animate-pulse"></span>
+                    Your Location
+                  </div>
+                  <div className="flex items-center gap-2 text-xs text-zinc-300">
+                    <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 border border-emerald-900 animate-pulse"></span>
+                    Active Users
+                  </div>
+                  <div className="flex items-center gap-2 text-xs text-zinc-300">
+                    <span className="w-2.5 h-2.5 rounded-full bg-red-500 border border-white"></span>
+                    Active Hotspots
+                  </div>
+                </div>
+
                 <div className="flex items-start gap-3">
                   <AlertTriangle className="w-5 h-5 text-red-500 shrink-0 mt-0.5" />
                   <div>
@@ -1057,7 +1159,7 @@ export default function MapDashboard() {
       />
 
       {/* Emergency Operations Panel */}
-      {userRole === 'emergency' && (
+      {true && (
         <div className="absolute top-24 left-4 z-40 w-80" onPointerDownCapture={(e) => e.stopPropagation()}>
           <Card className="bg-zinc-950/90 backdrop-blur-xl border border-red-500/20 shadow-2xl text-zinc-100 relative overflow-hidden">
             <div className="absolute top-0 left-0 right-0 h-0.5 bg-red-600 animate-pulse"></div>
@@ -1105,8 +1207,26 @@ export default function MapDashboard() {
         </div>
       )}
 
+      {/* Notification Feed */}
+      <div className="absolute top-24 left-1/2 -translate-x-1/2 w-80 space-y-2 z-[60] pointer-events-none flex flex-col items-center">
+        <AnimatePresence>
+          {notificationFeed.map(notif => (
+            <motion.div
+              key={notif.id}
+              initial={{ opacity: 0, y: -20, scale: 0.9 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.9, transition: { duration: 0.2 } }}
+              className="bg-zinc-950/90 backdrop-blur-md border border-white/10 rounded-xl p-4 shadow-2xl w-full text-center"
+            >
+              <div className="font-bold text-red-500 mb-1 tracking-wider text-xs uppercase">{notif.title}</div>
+              <div className="text-white/90 text-sm leading-tight">{notif.message}</div>
+            </motion.div>
+          ))}
+        </AnimatePresence>
+      </div>
+
       {/* Admin Command Center Sidebar */}
-      {userRole === 'admin' && (
+      {true && (
         <div className="absolute top-20 right-4 z-40 w-96 max-h-[calc(100vh-8rem)] bg-zinc-950/95 backdrop-blur-xl border border-zinc-800/80 rounded-3xl shadow-2xl flex flex-col overflow-hidden text-zinc-100" onPointerDownCapture={(e) => e.stopPropagation()}>
           <div className="px-5 py-4 border-b border-zinc-800 flex items-center justify-between bg-gradient-to-r from-zinc-950 to-zinc-900/50">
             <div className="flex items-center gap-2">
@@ -1212,12 +1332,6 @@ export default function MapDashboard() {
         </div>
       )}
 
-      {/* Role-Based Authentication Overlay */}
-      <AnimatePresence>
-        {showAuthModal && (
-          <AuthOverlay onAuthSuccess={() => setShowAuthModal(false)} />
-        )}
-      </AnimatePresence>
     </div>
   );
 }

@@ -9,14 +9,20 @@ import { lineString, point } from '@turf/helpers';
 import cors from '@fastify/cors';
 import { Server } from 'socket.io';
 import * as dotenv from 'dotenv';
-import { createClient } from '@supabase/supabase-js';
+import crypto from 'crypto';
 import { db } from './db';
 import { users, deviceLocations, trafficHotspots } from './db/schema';
 import { sql } from 'drizzle-orm';
 import fs from 'fs';
 import { GoogleGenerativeAI, SchemaType } from '@google/generative-ai';
+import { createClient } from '@supabase/supabase-js';
 
 dotenv.config();
+
+const supabase = createClient(
+  process.env.SUPABASE_URL || 'https://placeholder.supabase.co',
+  process.env.SUPABASE_ANON_KEY || 'placeholder'
+);
 
 // Priority weight mappings (Tier 1: Truck/Bus, Tier 2: Car/SUV/Van, Tier 3: Motorcycle/Bike/Scooter/Other)
 const VEHICLE_PRIORITY_WEIGHTS: Record<string, number> = {
@@ -189,8 +195,6 @@ async function triggerVirtualPreemptionAlert(emergency: any, incident: string, s
 
 const app = fastify({ logger: true });
 app.register(cors, { origin: '*' });
-
-const supabase = createClient(process.env.SUPABASE_URL!, process.env.SUPABASE_ANON_KEY!);
 
 // Socket.io initialization
 const io = new Server(app.server, {
@@ -438,6 +442,10 @@ app.get('/api/hotspots', async (request, reply) => {
 });
 
 // Mock Valhalla routing abstraction proxying to OSRM with Turf.js traffic avoidance detours
+app.get('/', async (request, reply) => {
+  return { status: 'ok', service: 'traffic-wizard-backend' };
+});
+
 app.get('/api/route', async (request, reply) => {
   const { start, end, avoidanceMultiplier } = request.query as { start: string; end: string; avoidanceMultiplier?: string };
   try {
@@ -464,7 +472,7 @@ async function extractIntentFromLLM(text: string): Promise<{ destination: string
         responseSchema: {
           type: SchemaType.OBJECT,
           properties: {
-            destination: { type: SchemaType.STRING, description: "Name of the destination city or area in Hyderabad (e.g. Charminar, Hitec City)" },
+            destination: { type: SchemaType.STRING, description: "The exact destination name requested by the user, extracted verbatim (e.g. Raja Dhanrajgir palace, Charminar)" },
             vehicleMode: { type: SchemaType.STRING, enum: ["driving", "cycling", "walking"], format: "enum", description: "Mode of transportation" },
             avoidHighways: { type: SchemaType.BOOLEAN, description: "Whether the user wants to avoid highways/major bypass roads" }
           },
@@ -473,7 +481,7 @@ async function extractIntentFromLLM(text: string): Promise<{ destination: string
       }
     });
 
-    const prompt = `Analyze this user navigation request: "${text}". Extract the destination, vehicle mode, and whether they want to avoid highways. If unspecified, default vehicleMode to "driving" and avoidHighways to false.`;
+    const prompt = `Analyze this user navigation request: "${text}". Extract the exact destination name requested by the user. Do not hallucinate or substitute the location. Extract vehicle mode, and whether they want to avoid highways. If unspecified, default vehicleMode to "driving" and avoidHighways to false.`;
     const result = await model.generateContent(prompt);
     const responseText = result.response.text();
     return JSON.parse(responseText);
@@ -485,13 +493,22 @@ async function extractIntentFromLLM(text: string): Promise<{ destination: string
 
 function fallbackExtractIntent(text: string): { destination: string, vehicleMode: string, avoidHighways: boolean } {
   const lower = text.toLowerCase();
-  let destination = "Charminar";
+  let destination = "";
   
   for (const loc of HYDERABAD_LOCATIONS) {
     const cleanName = loc.replace(" Junction", "").replace(" Flyover", "").replace(" Metro Station", "").replace(" Circle", "").replace(" Cross Roads", "").replace(" RTO", "").replace(" Ring Road", "");
     if (lower.includes(cleanName.toLowerCase())) {
       destination = cleanName;
       break;
+    }
+  }
+
+  if (!destination) {
+    const toMatch = text.match(/(?:navigate to|go to|take me to|to)\s+([^.]+)/i);
+    if (toMatch && toMatch[1]) {
+      destination = toMatch[1].trim();
+    } else {
+      destination = "Charminar";
     }
   }
 
@@ -528,7 +545,7 @@ async function geocodeDestination(destination: string): Promise<[number, number]
       return MOCK_COORDS[k];
     }
   }
-  return MOCK_COORDS["charminar"];
+  return null;
 }
 
 // Feature 2: Natural Language "Copilot" Route
@@ -588,29 +605,36 @@ app.post('/api/traffic-anomaly', async (request, reply) => {
   return { status: 'Webhook received and processed by n8n placeholder' };
 });
 
-// Authentication Middleware for Socket.io
+// Authenticated connection middleware
 io.use(async (socket, next) => {
-  const token = socket.handshake.auth.token;
-  if (!token) return next(new Error('Authentication error'));
-  
-  const { data, error } = await supabase.auth.getUser(token);
-  if (error || !data.user) return next(new Error('Authentication error'));
-  
-  socket.data.userId = data.user.id;
-  
-  // Extract custom metadata fields stored inside the token payload
-  const meta = data.user.user_metadata || {};
-  socket.data.profile = {
-    id: data.user.id,
-    fullName: meta.full_name || 'Anonymous User',
-    email: data.user.email || '',
-    phone: meta.phone_number || meta.phone || '',
-    role: meta.role || 'general',
-    vehicleType: meta.vehicle_type,
-    emergencyServiceType: meta.emergency_service_type
-  };
-  
-  next();
+  try {
+    const token = socket.handshake.auth.token;
+    if (!token) {
+      return next(new Error('Authentication token missing'));
+    }
+
+    const { data: { user }, error } = await supabase.auth.getUser(token);
+    
+    if (error || !user) {
+      console.error('Socket authentication failed:', error?.message);
+      return next(new Error('Invalid or expired authentication token'));
+    }
+
+    const role = socket.handshake.auth.role || 'operator';
+    
+    socket.data.userId = user.id;
+    socket.data.profile = {
+      id: user.id,
+      role: role,
+      fullName: user.email?.split('@')[0] || `Op-${user.id.substring(0,4)}`,
+      vehicleType: socket.handshake.auth.emergencyType || 'Car',
+    };
+
+    next();
+  } catch (err) {
+    console.error('Unexpected socket auth error:', err);
+    next(new Error('Internal Authentication Error'));
+  }
 });
 
 io.on('connection', async (socket) => {
@@ -728,7 +752,7 @@ const SEVERITIES = ['Moderate Traffic', 'Heavy Congestion', 'Gridlock'];
 function createRandomHotspot(id: string, index?: number): HotspotState {
   const centerLng = HYDERABAD_BOUNDS.minLng + Math.random() * (HYDERABAD_BOUNDS.maxLng - HYDERABAD_BOUNDS.minLng);
   const centerLat = HYDERABAD_BOUNDS.minLat + Math.random() * (HYDERABAD_BOUNDS.maxLat - HYDERABAD_BOUNDS.minLat);
-  const radiusKm = 0.15 + Math.random() * 0.65; // Smaller radius: ~150m to 800m
+  const radiusKm = 0.15 + Math.random() * 0.15; // 150m to 300m
   const severityVal = 1 + Math.floor(Math.random() * 3); // 1, 2, or 3
 
   const idx = index !== undefined ? index : parseInt(id.replace('hotspot-', '')) || 0;
@@ -741,7 +765,7 @@ function createRandomHotspot(id: string, index?: number): HotspotState {
     targetLng: centerLng + (Math.random() - 0.5) * 0.015,
     targetLat: centerLat + (Math.random() - 0.5) * 0.01,
     radiusKm,
-    targetRadiusKm: 0.15 + Math.random() * 0.65,
+    targetRadiusKm: 0.15 + Math.random() * 0.15,
     severity: severityVal,
     description: SEVERITIES[severityVal - 1],
     locationName
@@ -769,7 +793,7 @@ async function fetchPredictedTrafficFromLLM() {
               lat: { type: SchemaType.NUMBER, description: "Latitude within 17.3 and 17.5" },
               lng: { type: SchemaType.NUMBER, description: "Longitude within 78.3 and 78.6" },
               severity: { type: SchemaType.NUMBER, description: "Traffic severity level from 1 to 10" },
-              radiusKm: { type: SchemaType.NUMBER, description: "Hotspot radius in kilometers from 0.5 to 2.0" },
+              radiusKm: { type: SchemaType.NUMBER, description: "Hotspot radius in kilometers from 0.15 to 0.3" },
               locationName: { type: SchemaType.STRING, description: "Descriptive name of the intersection or road in Hyderabad (e.g., Gachibowli Flyover)" }
             },
             required: ["lat", "lng", "severity", "radiusKm", "locationName"]
@@ -868,7 +892,7 @@ setInterval(() => {
         if (Math.random() < 0.1) {
           hotspot.targetLng = hotspot.centerLng + (Math.random() - 0.5) * 0.015;
           hotspot.targetLat = hotspot.centerLat + (Math.random() - 0.5) * 0.01;
-          hotspot.targetRadiusKm = 0.15 + Math.random() * 0.65;
+          hotspot.targetRadiusKm = 0.15 + Math.random() * 0.15;
           // 25% chance to change severity/description
           if (Math.random() < 0.25) {
             hotspot.severity = 1 + Math.floor(Math.random() * 3);
