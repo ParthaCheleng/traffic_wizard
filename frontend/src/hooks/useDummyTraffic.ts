@@ -31,20 +31,27 @@ export function useDummyTraffic(trafficData: any, isMapLoaded: boolean) {
       // 80% chance to cluster tightly around hotspots if available (high density in danger zones)
       if (Math.random() < 0.8 && epicenters.length > 0) {
         clusterCenter = epicenters[Math.floor(Math.random() * epicenters.length)];
-        // Circular scatter around epicenter
-        const r = 0.015 * Math.sqrt(Math.random());
+        // Organic scatter around epicenter using gaussian-like spread
+        const r = 0.02 * (Math.random() + Math.random() + Math.random()) / 3;
         const theta = Math.random() * 2 * Math.PI;
         lng = clusterCenter[0] + r * Math.cos(theta);
         lat = clusterCenter[1] + r * Math.sin(theta);
       } else {
-        // Center of Hyderabad
+        // Organic city-wide spread using Gaussian approximation (Irwin-Hall)
+        // This prevents any visible geometric shapes (squares or circles) at the edges
         const centerLng = 78.4744;
         const centerLat = 17.3850;
-        const maxRadius = 0.15;
-        const r = maxRadius * Math.sqrt(Math.random());
-        const theta = Math.random() * 2 * Math.PI;
-        lng = centerLng + r * Math.cos(theta);
-        lat = centerLat + r * Math.sin(theta);
+        
+        // Sum of 6 randoms creates a nice bell curve (normal distribution)
+        let randX = 0;
+        let randY = 0;
+        for (let j = 0; j < 6; j++) { randX += Math.random(); randY += Math.random(); }
+        randX = (randX / 6) - 0.5; // Range: -0.5 to 0.5, heavily weighted towards 0
+        randY = (randY / 6) - 0.5;
+        
+        // Spread across a very wide ~40km area
+        lng = centerLng + (randX * 0.6); 
+        lat = centerLat + (randY * 0.6);
       }
       
       initialPoints.push({
@@ -95,15 +102,14 @@ export function useDummyTraffic(trafficData: any, isMapLoaded: boolean) {
               pt.dy -= (pt.lat - cy) * 0.01;
             }
           } else {
-             // Circular bounds wrap for general users
+             // Organic bounds using gravity towards center instead of a hard wall
              const centerLng = 78.4744;
              const centerLat = 17.3850;
-             const maxRadius = 0.15;
              const dist = Math.sqrt(Math.pow(pt.lng - centerLng, 2) + Math.pow(pt.lat - centerLat, 2));
-             if (dist > maxRadius) {
-                 // Push back towards center smoothly
-                 pt.dx -= (pt.lng - centerLng) * 0.005;
-                 pt.dy -= (pt.lat - centerLat) * 0.005;
+             // Gravity increases as they drift further away
+             if (dist > 0.05) {
+                 pt.dx -= (pt.lng - centerLng) * 0.0005 * dist;
+                 pt.dy -= (pt.lat - centerLat) * 0.0005 * dist;
              }
           }
         });
