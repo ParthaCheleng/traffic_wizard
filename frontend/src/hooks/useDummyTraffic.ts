@@ -31,12 +31,20 @@ export function useDummyTraffic(trafficData: any, isMapLoaded: boolean) {
       // 80% chance to cluster tightly around hotspots if available (high density in danger zones)
       if (Math.random() < 0.8 && epicenters.length > 0) {
         clusterCenter = epicenters[Math.floor(Math.random() * epicenters.length)];
-        // Add random scatter around epicenter
-        lng = clusterCenter[0] + (Math.random() - 0.5) * 0.02;
-        lat = clusterCenter[1] + (Math.random() - 0.5) * 0.02;
+        // Circular scatter around epicenter
+        const r = 0.015 * Math.sqrt(Math.random());
+        const theta = Math.random() * 2 * Math.PI;
+        lng = clusterCenter[0] + r * Math.cos(theta);
+        lat = clusterCenter[1] + r * Math.sin(theta);
       } else {
-        lng = DEFAULT_BOUNDS.minLng + Math.random() * (DEFAULT_BOUNDS.maxLng - DEFAULT_BOUNDS.minLng);
-        lat = DEFAULT_BOUNDS.minLat + Math.random() * (DEFAULT_BOUNDS.maxLat - DEFAULT_BOUNDS.minLat);
+        // Center of Hyderabad
+        const centerLng = 78.4744;
+        const centerLat = 17.3850;
+        const maxRadius = 0.15;
+        const r = maxRadius * Math.sqrt(Math.random());
+        const theta = Math.random() * 2 * Math.PI;
+        lng = centerLng + r * Math.cos(theta);
+        lat = centerLat + r * Math.sin(theta);
       }
       
       initialPoints.push({
@@ -81,18 +89,22 @@ export function useDummyTraffic(trafficData: any, isMapLoaded: boolean) {
           // Bounding logic
           if (pt.clusterCenter) {
             const [cx, cy] = pt.clusterCenter;
-            if (Math.abs(pt.lng - cx) > 0.02) {
-              pt.lng = cx + (Math.random() - 0.5) * 0.01;
-              pt.dx *= -1; // Reverse vector if escaping cluster
-            }
-            if (Math.abs(pt.lat - cy) > 0.02) {
-              pt.lat = cy + (Math.random() - 0.5) * 0.01;
-              pt.dy *= -1;
+            const dist = Math.sqrt(Math.pow(pt.lng - cx, 2) + Math.pow(pt.lat - cy, 2));
+            if (dist > 0.02) {
+              pt.dx -= (pt.lng - cx) * 0.01;
+              pt.dy -= (pt.lat - cy) * 0.01;
             }
           } else {
-             // Default bounds wrap
-             if (pt.lng < DEFAULT_BOUNDS.minLng || pt.lng > DEFAULT_BOUNDS.maxLng) pt.dx *= -1;
-             if (pt.lat < DEFAULT_BOUNDS.minLat || pt.lat > DEFAULT_BOUNDS.maxLat) pt.dy *= -1;
+             // Circular bounds wrap for general users
+             const centerLng = 78.4744;
+             const centerLat = 17.3850;
+             const maxRadius = 0.15;
+             const dist = Math.sqrt(Math.pow(pt.lng - centerLng, 2) + Math.pow(pt.lat - centerLat, 2));
+             if (dist > maxRadius) {
+                 // Push back towards center smoothly
+                 pt.dx -= (pt.lng - centerLng) * 0.005;
+                 pt.dy -= (pt.lat - centerLat) * 0.005;
+             }
           }
         });
         
