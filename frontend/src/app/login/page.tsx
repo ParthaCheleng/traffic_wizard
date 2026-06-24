@@ -11,6 +11,7 @@ export default function LoginPage() {
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [success, setSuccess] = useState<string | null>(null);
   const router = useRouter();
 
   const handleAuth = async (action: 'login' | 'signup') => {
@@ -21,6 +22,7 @@ export default function LoginPage() {
 
     setLoading(true);
     setError(null);
+    setSuccess(null);
 
     let res;
     if (action === 'signup') {
@@ -32,7 +34,11 @@ export default function LoginPage() {
     if (res.error) {
       setError(res.error.message);
     } else {
-      router.push('/');
+      if (action === 'signup') {
+        setSuccess('Successfully requested access! Please check your email to verify your account before logging in.');
+      } else {
+        router.push('/');
+      }
     }
     setLoading(false);
   };
@@ -63,6 +69,11 @@ export default function LoginPage() {
             {error && (
               <div className="bg-red-500/10 border border-red-500/20 text-red-400 text-sm p-3 rounded-xl text-center">
                 {error}
+              </div>
+            )}
+            {success && (
+              <div className="bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 text-sm p-3 rounded-xl text-center">
+                {success}
               </div>
             )}
 
